@@ -6,6 +6,8 @@ import matplotlib.pyplot as plt
 from astropy.io import fits
 import scipy.constants as sc
 from astropy.io.fits import getval
+
+from scipy.interpolate import griddata
 from matplotlib.ticker import MultipleLocator, LogLocator
 from plottingRoutines import plottingRoutines as pr
 
@@ -179,6 +181,35 @@ def getAverageDensity_weighted(model, mu=2.34):
                      dtemp, 
                      0)
     return rvals, temp, dtemp    
+    
+# Grid the chemical model for contourf plots.
+def toGrid(data, method='linear', npts=None, rin=None, rout=None):
+    if npts is None:
+        xgrid = np.unique(data[0])
+        ygrid = np.unique(data[1])
+    else:
+        xgrid = np.linspace(data[0].min(),data[0].max(),npts)
+        ygrid = np.linspace(data[1].min(),data[1].max(),npts)
+    if not rin is None:
+        xgrid = xgrid[xgrid >= rin]
+    if not rout is None:
+        xgrid = zgrid[xgrid < rout]
+    pgrid = np.array([griddata((data[0], data[1]), 
+                               param, 
+                               (xgrid[None,:], ygrid[:,None]), 
+                               method=method, 
+                               fill_value=np.nan) 
+                      for param in data])
+    return xgrid, ygrid, pgrid
+    
+# Get the molecular layer. Assumes regularly spaced grids.    
+def getMolecularLayer(data):
+    if not np.isclose(np.diff(data[1,:,0]).std(), 0.):
+        raise NotImplementedError("Only works on regularly spaced grids.")
+    else:
+        sigma = np.nansum(data[-1], axis=0)
+        cweights = data[-1] / sigma[None, :]
+    return cweights
 
 #------ Plotting Routines ------#
 #
@@ -772,10 +803,11 @@ def getFiles(molecule=None, beam=None, models=None, inttime=360, mtype='CASA'):
 
 # Return the profile of a zeroth moment.
 def getProfile(fn, bins=None, lowchan=0, highchan=-1,
-               clip=False, removeCont=1, verbose=False):
-    inc = parseFitsName(fn)[2]
+               clip=False, removeCont=0, verbose=False, 
+               bunit=None, vunit='kms', inc=0.):
     zeroth = getZeroth(fn, lowchan=lowchan, highchan=highchan, clip=clip, 
-                       removeCont=removeCont, verbose=verbose)
+                       removeCont=removeCont, verbose=verbose, 
+                       bunit=bunit, vunit=vunit)
     axes = getPositionAxes(fn)
     rvals = np.hypot(axes[None,:], axes[:,None]/np.cos(inc))
     return calcProfile(zeroth, rvals, bins=bins)
@@ -931,9 +963,13 @@ def toJansky(filename, outarea='pixel', verbose=False):
     # Calculate pixel and beam areas.
     
     pixarea = np.radians(fits.getval(filename, 'cdelt2'))**2
-    beamarea = np.pi * np.radians(getval(filename, 'bmaj', 0))
-    beamarea *= np.radians(getval(filename, 'bmin', 0))
-    beamarea /= 4. * np.log(2.)
+    try:
+        beamarea = np.pi * np.radians(getval(filename, 'bmaj', 0))
+        beamarea *= np.radians(getval(filename, 'bmin', 0))
+        beamarea /= 4. * np.log(2.)
+    except:
+        beamarea = pixarea
+    
     
     # Convert from [K] -> [Jy/area]. 
     # Convert from [Jy/beam] -> [Jy/pixel]
@@ -960,19 +996,22 @@ def toJansky(filename, outarea='pixel', verbose=False):
     return
     
 def toKelvin(filename, verbose=False):
-    raise NotImplementedError("No toKelvin conversion yet.")
+    if fits.getval(filename, 'bunit') == 'K':
+        return 1
+    else:
+        raise NotImplementedError("No toKelvin conversion yet.")
     return
 
 
 # Calculate the integrated flux in Jy/km/s.
 def getIntegratedFlux(filename, dx=4., lowchan=0, highchan=-1, clip=True, 
-                      removeCont=0):
+                      removeCont=0, bunit=None, vunit='kms'):
     zeroth= getZeroth(filename, lowchan, highchan, clip=clip, 
-                      removeCont=removeCont)   
+                      removeCont=removeCont, bunit=bunit, vunit=vunit)   
     axes = getPositionAxes(filename)  
     imin, imax = abs(axes+dx).argmin(), abs(axes-dx).argmin()
     region = zeroth[imin:imax,imin:imax]
-    totalint = np.sum(region) / 1e3
+    totalint = np.sum(region) / 1e3 
     return totalint
 
 
@@ -1079,20 +1118,24 @@ def sortProfsInfos(profs, infos, sort):
     return profs, infos
 
 
-def addBeam(ax, filename, dist=None, verbose=False):
+def addBeam(ax, filename, dist=None, verbose=False, offset=0.1,
+            color='w', hatch='//////'):
+
     if dist is None:
         scale = 1.
     else:
-        scale = dist 
+        scale = dist
+
     from matplotlib.patches import Ellipse
-    ax.add_patch(Ellipse((-180*scale/54., -180*scale/54.), 
+    ax.add_patch(Ellipse((offset, offset),
                          width=getval(filename, 'bmin', 0) * 3600. * scale,
-                         height=getval(filename, 'bmaj', 0) * 3600. * scale, 
+                         height=getval(filename, 'bmaj', 0) * 3600. * scale,
                          angle=getval(filename, 'bpa', 0),
-                         fill=False, hatch='/////////', lw=1., color='w'))
+                         fill=False, hatch=hatch, lw=1., color=color,
+                         transform=ax.transAxes))
     if verbose:
         print 'bmin = ', getval(filename, 'bmin', 0) * 3600. 
         print 'bmaj = ', getval(filename, 'bmaj', 0) * 3600. 
         print 'bpa = ', getval(filename, 'bpa', 0)
     return
-    
+
