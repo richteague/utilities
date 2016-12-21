@@ -81,5 +81,10 @@ def normalisedgaussian(x, center, width):
     return gaussian(x, center, width, 1./width/np.sqrt(2.*np.pi))
 
 
-
-
+def running_mean(arr, cells=2):
+    """Returns the running mean of 'arr' over 'cells' number of cells."""
+    if type(arr) != np.ndarray:
+        arr = np.array(arr)
+    cumulative_sum = np.cumsum(np.insert(np.insert(arr, 0, arr[0]), -1,
+                                         arr[-1]))
+    return (cumulative_sum[cells:] - cumulative_sum[:-cells]) / cells
