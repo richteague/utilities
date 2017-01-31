@@ -23,6 +23,9 @@ rcParams['ytick.major.pad']     = 6
 rcParams['ytick.direction']     = 'in'
 rcParams['xtick.direction']     = 'in'
 rcParams['figure.figsize']      = 3.5, 3./sc.golden
+rcParams['pdf.fonttype']        = 42
+rcParams['ps.fonttype']         = 42
+
 
 # Colours.
 snscols = sns.xkcd_palette(["windows blue", "amber", "faded green", 
