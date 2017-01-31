@@ -6,15 +6,14 @@ import scipy.constants as sc
 class idlmodel:
     """Class to read in a IDL model structure from Roy."""
 
-    def __init__(self, path, model, verbose=False):
+    def __init__(self, path, model, verbose=False, **kwargs):
         """Read in the model and parse the various arrays."""
         recarr = readsav(path, python_dict=True, verbose=verbose)
         self.recarr = recarr[recarr.keys()[0]][int(model)]
         if verbose:
             print self.recarr.dtype
 
-        # Coordinates. Can plot directly with contourf, however
-        # also project onto cartestian.
+        # Coordinates.
         self.rvals = self.recarr['r']['mean'][0] / 1e2 / sc.au
         self.tvals = np.radians(self.recarr['theta']['mean'][0])
         self.xvals = self.rvals[None, :] * np.cos(self.tvals[:, None])
@@ -30,24 +29,60 @@ class idlmodel:
         self.mdust = self.recarr['mdust']
         self.mgas = self.recarr['mgas']
         self.alpha = self.recarr['alpha']
-
-        # Stellar variables.
-        self.mstar = self.recarr['pars']['star'][0]['mstar'][0]
-        self.lstar = self.recarr['pars']['star'][0]['lstar'][0]
-        self.distance = self.recarr['pars']['star'][0]['dpc'][0]
-
-        # Surface density variables.
+        self.gastodust = self.recarr['pars']['dust'][0]['gas2dust'][0]
         self.rin = self.recarr['pars']['sigma'][0]['rin'][0]
         self.rout = self.recarr['pars']['sigma'][0]['rout'][0]
 
-        # Dust properties.
-        self.dustprops = self.recarr['pars']['dust'][0]
-        self.gastodust = self.dustprops['gas2dust'][0]
-        self.asmalldust = [self.dustprops['aminsmall'],
-                           self.dustprops['amaxsmall']]
-        self.alargedust = [self.dustprops['aminlarge'],
-                           self.dustprops['amaxlarge']]
-        self.msmalldust = 10**self.dustprops['logmdustsmall'][0]
-        self.mlargedust = 10**self.dustprops['logmdustlarge'][0]
+        # Stellar variables.
+        self.star = star(self.recarr)
 
+        # Grain properties.
+        self.grains = grains(self.recarr, kwargs.get('ignore_bins', 1))
+        return
+
+
+class grains:
+    """Grains subclass."""
+    def __init__(self, recarr, ignore=1):
+        """Ignore the final `ignore` populations."""
+
+        if ignore == 0:
+            raise NotImplementedError()
+
+        self.abundance = recarr['abun'][:-ignore]
+        self.grainprops = recarr['kappa'][0]['pars']
+        self.minsizes = self.grainprops['amin'][:-ignore]
+        self.maxsizes = self.grainprops['amax'][:-ignore]
+        self.exponent = self.grainprops['alpha'][:-ignore]
+        self.nbins = self.minsizes.size
+
+        assert self.maxsizes.size == self.nbins
+        assert self.exponent.size == self.nbins
+
+        self.avgsizebin = self.calcAverageSizeBin()
+        self.avgsizecell = self.calcAverageSizeCell()
+        return
+
+    def calcAverageSizeBin(self):
+        """Return average grain size per bin."""
+        avg = np.zeros(self.nbins)
+        for i in range(self.nbins):
+            size = np.linspace(self.minsizes[i], self.maxsizes[i], 1e5)
+            freq = np.power(size, self.exponent[i])
+            avg[i] = np.average(size, weights=freq)
+        return avg
+
+    def calcAverageSizeCell(self):
+        """Return the average grain size per cell."""
+        avg3D = self.avgsizebin[:, None, None] * np.ones(self.abundance.shape)
+        return np.average(avg3D, weights=self.abundance, axis=0)
+
+
+class star:
+    """Star subclass."""
+    def __init__(self, recarr):
+        self.starprops = recarr['pars']['star'][0]
+        self.mass = self.starprops['mstar'][0]
+        self.luminosity = self.starprops['lstar'][0]
+        self.distance = self.starprops['dpc'][0]
         return
