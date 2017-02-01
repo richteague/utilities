@@ -21,32 +21,35 @@ class idlmodel:
         self.xvals = self.rvals[None, :] * np.cos(self.tvals[:, None])
         self.yvals = self.rvals[None, :] * np.sin(self.tvals[:, None])
 
-        # Physical properties.
+        # Physical properties. Note that `abun` is the grainsize bin abundance.
         self.temperature = self.recarr['t']
         self.gas = self.recarr['rho_gas']
         self.dust = self.recarr['rho_dust']
+        self.abun = self.recarr['abun']
+
+        # Gas-to-dust ratios.
+        self.totalg2d = self.recarr['pars']['dust'][0]['gas2dust'][0]
         self.g2d = self.gas / self.dust
         self.g2d = np.where(np.isfinite(self.g2d), self.g2d, np.nan)
-        self.abun = self.recarr['abun']
         self.scaleheight = self.recarr['hp'] / 1e2 / sc.au
 
         # Model specific values.
         self.mdust = self.recarr['mdust']
         self.mgas = self.recarr['mgas']
-        self.alpha = self.recarr['alpha']
-        self.totalg2d = self.recarr['pars']['dust'][0]['gas2dust'][0]
+        self.logalpha = float('%.2f' % np.log10(self.recarr['alpha']))
         self.rin = self.recarr['pars']['sigma'][0]['rin'][0]
         self.rout = self.recarr['pars']['sigma'][0]['rout'][0]
 
-        # Stellar variables.
+        # Stellar and grain roperties.
         self.star = star(self.recarr)
-
-        # Grain properties.
         self.grains = grains(self.recarr, kwargs.get('ignore_bins', 1))
+
+        # Dictionary for precalculated ALCHEMIC structures.
+        self._alchemic = {}
         return
 
-    def writeALCHEMIC(self, mindens=1e3, fileout=None, **kwargs):
-        """Write model for ALCHEMIC."""
+    def ALCHEMICdic(self, mindens, **kwargs):
+        """Prepare model for ALCHEMIC."""
 
         temp_grid = self.grid_data(self.xvals, self.yvals,
                                    self.temperature,
@@ -58,7 +61,7 @@ class idlmodel:
         dens_grid = np.power(10., dens_grid)
 
         size_grid = self.grid_data(self.xvals, self.yvals,
-                                   np.log10(self.grains.effsizecell),
+                                   np.log10(self.grains.effsize),
                                    **kwargs).ravel()
         size_grid = np.power(10., size_grid)
 
@@ -79,15 +82,21 @@ class idlmodel:
                              np.take(size_grid, idx),
                              np.take(g2d_grid, idx)])
         mask = self.density_mask(tosave[3], mindens)
-        tosave = np.delete(tosave, mask, axis=1)
+        return np.delete(tosave, mask, axis=1)
 
-        # Save to the file. If not filename is given, use the input model file.
-        if fileout is None:
-            fileout = self.filename.split('/')[-1]
-            fileout = '.'.join(fileout.split('.')[:-1])+'.dat'
-        header = 'r [au], z [au], T [K], rho [g/ccm], a [um], g2d'
-        np.savetxt(fileout, tosave.T, fmt='%.5e', header=header)
-        print('Successfully saved to', fileout)
+    def toALCHEMIC(self, mindens=1e3, fileout=None, retarr=False, **kwargs):
+        """Prepare model for ALCHEMIC."""
+        try:
+            tosave = self._alchemic[mindens]
+        except:
+            self._alchemic[mindens] = self.ALCHEMICdic(mindens, **kwargs)
+            tosave = self._alchemic[mindens]
+        if fileout is not None:
+            header = 'r [au], z [au], T [K], rho [g/ccm], a [um], g2d'
+            np.savetxt(fileout, tosave.T, fmt='%.5e', header=header)
+            print('Successfully saved to', fileout)
+        if retarr:
+            return tosave
         return
 
     def grid_data(self, xvals, yvals, pvals, **kwargs):
