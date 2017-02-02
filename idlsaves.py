@@ -2,18 +2,23 @@ from scipy.io import readsav
 import numpy as np
 import scipy.constants as sc
 from scipy.interpolate import griddata
+from scipy.interpolate import interp1d
+import warnings
 
 
 class idlmodel:
     """Class to read in a IDL model structure from Roy."""
 
-    def __init__(self, path, model, verbose=False, **kwargs):
+    def __init__(self, path, model=0, verbose=False, **kwargs):
         """Read in the model and parse the various arrays."""
+
         recarr = readsav(path, python_dict=True, verbose=verbose)
         self.filename = path.split('/')[-1]
         self.recarr = recarr[recarr.keys()[0]][int(model)]
         if verbose:
             print self.recarr.dtype
+        else:
+            warnings.filterwarnings('ignore')
 
         # Coordinates.
         self.rvals = self.recarr['r']['mean'][0] / 1e2 / sc.au
@@ -45,93 +50,111 @@ class idlmodel:
         self.grains = grains(self.recarr, kwargs.get('ignore_bins', 1))
 
         # Dictionary for precalculated ALCHEMIC structures.
-        self._alchemic = {}
+        self._equalgrids = {}
+        self._unequalgrids = {}
         return
 
-    def ALCHEMICdic(self, mindens, **kwargs):
-        """Prepare model for ALCHEMIC."""
-
-        temp_grid = self.grid_data(self.xvals, self.yvals,
-                                   self.temperature,
-                                   **kwargs).ravel()
-
-        dens_grid = self.grid_data(self.xvals, self.yvals,
-                                   np.log10(self.gas),
-                                   **kwargs).ravel()
-        dens_grid = np.power(10., dens_grid)
-
-        size_grid = self.grid_data(self.xvals, self.yvals,
-                                   np.log10(self.grains.effsize),
-                                   **kwargs).ravel()
-        size_grid = np.power(10., size_grid)
-
-        g2d_grid = self.grid_data(self.xvals, self.yvals,
-                                  self.g2d, **kwargs).ravel()
-
-        rgrid, zgrid = self.estimate_grids(self.xvals, self.yvals, **kwargs)
-        r_grid = (rgrid[None, :] * np.ones(zgrid.size)[:, None]).ravel()
-        z_grid = (np.ones(rgrid.size)[None, :] * zgrid[:, None]).ravel()
-
-        # Sort the data and then mask out values.
-
-        idx = np.argsort(r_grid)
-        tosave = np.squeeze([np.take(r_grid, idx),
-                             np.take(z_grid, idx),
-                             np.take(temp_grid, idx),
-                             np.take(dens_grid, idx),
-                             np.take(size_grid, idx),
-                             np.take(g2d_grid, idx)])
-        mask = self.density_mask(tosave[3], mindens)
-        return np.delete(tosave, mask, axis=1)
-
-    def toALCHEMIC(self, mindens=1e3, fileout=None, retarr=False, **kwargs):
-        """Prepare model for ALCHEMIC."""
-        try:
-            tosave = self._alchemic[mindens]
-        except:
-            self._alchemic[mindens] = self.ALCHEMICdic(mindens, **kwargs)
-            tosave = self._alchemic[mindens]
-        if fileout is not None:
-            header = 'r [au], z [au], T [K], rho [g/ccm], a [um], g2d'
-            np.savetxt(fileout, tosave.T, fmt='%.5e', header=header)
-            print('Successfully saved to', fileout)
-        if retarr:
-            return tosave
-        return
-
-    def grid_data(self, xvals, yvals, pvals, **kwargs):
-        """Uses griddata to grid the values."""
-        rgrid, zgrid = self.estimate_grids(xvals, yvals, **kwargs)
-        return griddata((xvals.ravel(), yvals.ravel()), pvals.ravel(),
-                        (rgrid[None, :], zgrid[:, None]), method='linear')
-
-    def estimate_grids(self, xpnts, ypnts, **kwargs):
+    def cart_axes(self, nr=100, nz=100, log=False):
         """Return the axes onto which to grid."""
-        nr = kwargs.get('nr', 100)
-        nz = kwargs.get('nz', 100)
-        if kwargs.get('log', False):
-            assert ypnts.min() > 0
-            rgrid = np.logspace(np.log10(xpnts.min()),
-                                np.log10(xpnts.max()),
+        if log:
+            assert self.yvals.min() > 0
+            rgrid = np.logspace(np.log10(self.xvals.min()),
+                                np.log10(self.xvals.max()),
                                 nr)
-            zgrid = np.logspace(np.log10(ypnts.min()),
-                                np.log10(ypnts.max()),
+            zgrid = np.logspace(np.log10(self.yvals.min()),
+                                np.log10(self.yvals.max()),
                                 nz)
         else:
-            rgrid = np.linspace(xpnts.min(), xpnts.max(), nr)
-            zgrid = np.linspace(ypnts.min(), ypnts.max(), nz)
+            rgrid = np.linspace(self.xvals.min(), self.xvals.max(), nr)
+            zgrid = np.linspace(self.yvals.min(), self.yvals.max(), nz)
         return rgrid, zgrid
 
-    def points_to_grid(self, mindens):
-        """Returns the points to grid."""
-        mask = self.density_mask(mindens)
-        xpnt = self.xvals[mask]
-        ypnt = self.yvals[mask]
-        temp = self.temperature[mask]
-        dens = self.gas[mask]
-        size = self.grains.effsizecell[mask]
-        g2dr = self.g2d[mask]
-        return np.array([xpnt, ypnt, temp, dens, g2dr, size])
+    def cart_grid(self, pvals, nr=100, nz=100, log=False):
+        """Converts pvals from polar to cartestian gridding."""
+        rgrid, zgrid = self.cart_axes(nr, nz, log)
+        pgrid = griddata((self.xvals.ravel(), self.yvals.ravel()),
+                         np.log10(pvals).ravel(),
+                         (rgrid[None, :], zgrid[:, None]),
+                         method='linear')
+        return np.power(10., pgrid)
+
+    def unequal_grid(self, mindens=1e3, nr=100, nz=100, log=False):
+        """Return 1+1D grid with unequal number of z points at each r."""
+        try:
+            return self._unequalgrids[mindens, nr, nz, log]
+        except:
+            pass
+        rpts, zpts = self.cart_axes(nr, nz, log)
+        rval = (rpts[None, :] * np.ones(nz)[:, None]).ravel()
+        zval = (np.ones(nr)[None, :] * zpts[:, None]).ravel()
+        temp = self.cart_grid(self.temperature, nr, nz, log)
+        dens = self.cart_grid(self.gas, nr, nz, log)
+        size = self.cart_grid(self.grains.effsize, nr, nz, log)
+        g2dr = self.cart_grid(self.g2d, nr, nz, log)
+
+        # Sort the data into increasing radius. Remove values is a value for
+        # mindens has been supplied.
+
+        idx = np.argsort(rval)
+        arr = np.squeeze([np.take(rval, idx), np.take(zval, idx),
+                          np.take(temp, idx), np.take(dens, idx),
+                          np.take(size, idx), np.take(g2dr, idx)])
+
+        if mindens is not None:
+            arr = np.delete(arr, self.density_mask(arr[3], mindens), axis=1)
+        self._unequalgrids[mindens, nr, nz, log] = np.nan_to_num(arr)
+        return arr
+
+    def equal_grid(self, mindens=1e3, nr=100, nz=100, log=False):
+        """Return 1+1D grid with equal number of z points at each r."""
+        try:
+            return self._equalgrids[mindens, nr, nz, log]
+        except:
+            pass
+
+        high_res = self.unequal_grid(mindens, nr, nz*100, log)
+        rvals = np.unique(high_res[0])
+        grid = [[], [], [], [], [], []]
+
+        # Isolate the vertical column to interpolate from.
+
+        for r in rvals:
+            idx = [i for i in range(high_res[0].size) if high_res[0][i] == r]
+            column = np.take(high_res, idx, axis=1)
+
+            # Interpolate the new values. For some reason, np.interp() doesn't
+            # work as well as scipy.interpolate.interp1d. Interpolate in
+            # log-space for a smoother result.
+
+            rvals = np.ones(nz) * r
+            zvals = np.linspace(column[1].min(), column[1].max(), nz)
+            grid[0] = np.concatenate([grid[0], rvals], axis=0)
+            grid[1] = np.concatenate([grid[1], zvals], axis=0)
+            for i in range(2, len(grid)):
+                interp = interp1d(column[1], np.log10(column[i]))
+                insert = np.power(10, interp(zvals))
+                grid[i] = np.concatenate([grid[i], insert], axis=0)
+
+        self._equalgrids[mindens, nr, nz, log] = np.squeeze(grid)
+        return self._equalgrids[mindens, nr, nz, log]
+
+    def toALCHEMIC(self, fileout, equal=True, **kwargs):
+        """Save model for ALCHEMIC."""
+        nr = kwargs.get('nr', 100)
+        nz = kwargs.get('nz', 100)
+        log = kwargs.get('log', False)
+        mindens = kwargs.get('mindens', 1e3)
+
+        if equal:
+            arr = self.equal_grid(mindens, nr, nz, log)
+        else:
+            arr = self.unequal_grid(mindens, nr, nz, log)
+
+        print arr.shape
+        header = 'r [au], z [au], T [K], rho [g/ccm], a [um], g2d'
+        np.savetxt(fileout, arr.T, fmt='%.5', header=header)
+        print('Successfully saved to %s.' % fileout)
+        return
 
     def density_mask(self, dens_grid, mindens=1e3):
         """Select points in disk by their gas density."""
