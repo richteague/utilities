@@ -13,6 +13,7 @@ built. This will return a cube of the same shape at the provided datacube, with
 each voxel the fraction of the total integrated intensity which originates from
 there.
 
+TODO: Can we somehow estimate the line width from the data?
 Additionally we need to include some beam smear. Astropy includes a FFT
 convolution method which we could use.
 '''
@@ -85,7 +86,9 @@ class conicalmodel:
     def get_zeroth(self, **kwargs):
         """Return the zeroth moment of the datacube."""
         # TODO: Include an RMS cut.
-        return np.trapz(self.data, self.velax[:, None, None], axis=0)
+        # TODO: Should this be trapz or just sum?
+        # return np.trapz(self.data, self.velax[:, None, None], axis=0)
+        return np.nansum(self.data, axis=0)
 
     def get_intensity_profile(self, **kwargs):
         """Return the radial intensity profile."""
@@ -124,6 +127,11 @@ class conicalmodel:
         model = np.amax(model, axis=0) * self.dvchan
         self._phis[phi, linewidth] = model
         return model
+
+    def get_channel(self, cidx, phi, linewidth):
+        """Returns the model intensities."""
+        ifrac = self.intensity_fraction(cidx, phi, linewidth)
+        return self.profile(self.r_dep) * ifrac
 
     def intensity_fraction(self, cidx, phi, linewidth):
         """Fraction of intensity at given (x, y, v) voxel."""
