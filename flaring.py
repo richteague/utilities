@@ -1,19 +1,17 @@
 '''
 Functions to try and measure the flaring of CO emission after Rosenfeld++ 2013.
 
-Start with a datacube with position axes in [au]. From this produce two 2D
-arrays, x_sky and y_sky which are the (x, y) offset of each pixel from the
-centre of the source.
+By providing the datacube with which to make a comparison, the sky coordinates,
+(x_sky, y_sky) can be derived, along with the velocity axis. The inclination,
+position angle, distance to the source and stellar mass must all be provided.
 
-Using `sky_to_3D` will return a list of two arrays specifying the position, in
-either cylindrical or cartesian coordinates, of the emission surface at that
-pixel. These model coordinates allow for the projected velocity at each pixel
-to be calculated through `proj_velocity`.
+Several coordinate systems will be derived from these, including _dep values
+which are the midplane values of the disk for each pixel in [au].
 
-With a known projected velocity, line width, channel velocity and width,
-`intensity_fraction` will return the fraction of the integrated intensity which
-would arise from the specific voxel. Currently unsure on how to combine the
-emission from both sides of the disk.
+By providing 'get_model' with an opening angle and linewidth a model can be
+built. This will return a cube of the same shape at the provided datacube, with
+each voxel the fraction of the total integrated intensity which originates from
+there.
 
 Additionally we need to include some beam smear. Astropy includes a FFT
 convolution method which we could use.
@@ -23,6 +21,7 @@ import numpy as np
 import scipy.constants as sc
 from astropy.io import fits
 from astropy.io.fits import getval
+from scipy.interpolate import interp1d
 
 
 class conicalmodel:
@@ -41,7 +40,8 @@ class conicalmodel:
         self.dist = kwargs.get('dist', 150.)
         self.mstar = kwargs.get('mstar', 1.0)
 
-        # Read in the .fits file.
+        # Read in the .fits file and determine the axes.
+
         self.path = path
         self.data = fits.getdata(self.path, 0)
         self.npix = getval(self.path, 'naxis2', 0)
@@ -61,6 +61,13 @@ class conicalmodel:
         self.r_dep = np.hypot(self.x_dep, self.y_dep)
         self.t_dep = np.arctan2(self.y_dep, self.x_dep)
 
+        # From the derived coordinates, can estimate a radial integrated
+        # intensity profile. This consists of both an RMS estimate of the
+        # background and a binning.
+
+        self.zeroth = self.get_zeroth(**kwargs)
+        self.profile = self.get_intensity_profile(**kwargs)
+
         # Dictionaries to save pre-calculated phi models.
         # Keys are a (phi, linewidth) tuple.
 
@@ -75,6 +82,25 @@ class conicalmodel:
 
         return
 
+    def get_zeroth(self, **kwargs):
+        """Return the zeroth moment of the datacube."""
+        # TODO: Include an RMS cut.
+        return np.trapz(self.data, self.velax[:, None, None], axis=0)
+
+    def get_intensity_profile(self, **kwargs):
+        """Return the radial intensity profile."""
+        nbins = kwargs.get('nbins', 20)
+        rpnts = np.linspace(self.r_dep.min(), self.r_dep.max(), nbins)
+        ridxs = np.digitize(self.r_dep.ravel(), rpnts)
+        ipnts = [np.percentile(self.zeroth.ravel()[ridxs == r], [0.5])
+                 for r in range(1, nbins+1)]
+        ipnts = np.squeeze(ipnts)
+        return interp1d(rpnts, ipnts)
+
+    def intensity(self, rpnt):
+        """Returns interpolated integrated intensity at r."""
+        return self.profile(rpnt)
+
     def get_model(self, phi, linewidth):
         """Return a conical model."""
         try:
@@ -86,7 +112,8 @@ class conicalmodel:
         #       the near and front cone but currently this isn't taken into
         #       account.
         # TODO: Should this be at a higher sampling rate?
-        #       If yes, make it a multiple of self.dvchan.
+        #       If yes, make it a multiple of self.dvchan. But then how would
+        #       one index this in 'intensity_fraction'?
 
         pos, neg = self.get_3Dcylin(phi)
         vproj = [self.proj_velocity(pos), self.proj_velocity(neg)]

@@ -21,24 +21,41 @@ class idlmodel:
             warnings.filterwarnings('ignore')
 
         # Coordinates.
+
         self.rvals = self.recarr['r']['mean'][0] / 1e2 / sc.au
         self.tvals = np.radians(self.recarr['theta']['mean'][0])
         self.xvals = self.rvals[None, :] * np.cos(self.tvals[:, None])
         self.yvals = self.rvals[None, :] * np.sin(self.tvals[:, None])
 
-        # Physical properties. Note that `abun` is the grainsize bin abundance.
-        self.temperature = self.recarr['t']
-        self.gas = self.recarr['rho_gas']
-        self.dust = self.recarr['rho_dust']
-        self.abun = self.recarr['abun']
+        # Physical properties.
 
-        # Gas-to-dust ratios.
-        self.totalg2d = self.recarr['pars']['dust'][0]['gas2dust'][0]
-        self.g2d = self.gas / self.dust
-        self.g2d = np.where(np.isfinite(self.g2d), self.g2d, np.nan)
+        self.temperature = self.recarr['t']
         self.scaleheight = self.recarr['hp'] / 1e2 / sc.au
 
+        # Note that `abun` is the grainsize bin abundance.
+        # In order to allow MCMax to have a variable gas-to-dust ratio, the gas
+        # is parameterised as a grain species (final entry in `abun`). Thus:
+        #   rho_dust = total mass [g/ccm]
+        #   rho_dust * abun[-1] = gas mass [g/ccm]
+        #   rho_dust * sum(abund[:-1]) = dust mass [g/ccm]
+
+        self.rho = self.recarr['rho_dust']
+        self.abun = self.recarr['abun']
+        self.gas = self.rho * self.abun[-1]
+        self.dust = self.rho * (1. - self.abun[-1])
+        self.g2d = self.gas / self.dust
+
+        # Some regions of the disk will have extreme gas-to-dust ratios because
+        # of the settling. The kwarg 'maxg2d' can be used to clip these
+        # regions, or set to 'False' if to leave as normal.
+
+        maxg2d = kwargs.get('maxg2d', 1e4)
+        if maxg2d:
+            self.g2d = np.where(self.g2d < maxg2d, self.g2d, maxg2d)
+        self.totalg2d = self.recarr['pars']['dust'][0]['gas2dust'][0]
+
         # Model specific values.
+
         self.mdust = self.recarr['mdust']
         self.mgas = self.recarr['mgas']
         self.logalpha = float('%.2f' % np.log10(self.recarr['alpha']))
@@ -152,7 +169,7 @@ class idlmodel:
         else:
             arr = self.unequal_grid(mindens, nr, nz, log)
         header = 'r [au], z [au], T [K], rho [g/ccm], a [um], g2d'
-        np.savetxt(fileout, arr.T, fmt='%.5f', header=header)
+        np.savetxt(fileout, arr.T, fmt='%.5e', header=header)
         print('Successfully saved to %s.' % fileout)
         return
 
@@ -165,6 +182,10 @@ class idlmodel:
 
 class grains:
     """Grains subclass."""
+
+    # To trick MCMax into running with variable gas-to-dust ratios, the final
+    # grain size is actually the gas component. Hence we ignore this value.
+
     def __init__(self, recarr, ignore=1):
         """Ignore the final `ignore` populations."""
 
