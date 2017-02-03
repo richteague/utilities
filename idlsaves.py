@@ -44,6 +44,7 @@ class idlmodel:
         self.logalpha = float('%.2f' % np.log10(self.recarr['alpha']))
         self.rin = self.recarr['pars']['sigma'][0]['rin'][0]
         self.rout = self.recarr['pars']['sigma'][0]['rout'][0]
+        self.mu = self.recarr['mu']/sc.m_p/1e3
 
         # Stellar and grain roperties.
         self.star = star(self.recarr)
@@ -135,8 +136,9 @@ class idlmodel:
                 insert = np.power(10, interp(zvals))
                 grid[i] = np.concatenate([grid[i], insert], axis=0)
 
-        self._equalgrids[mindens, nr, nz, log] = np.squeeze(grid)
-        return self._equalgrids[mindens, nr, nz, log]
+        grid = np.nan_to_num(np.squeeze(grid))
+        self._equalgrids[mindens, nr, nz, log] = grid
+        return grid
 
     def toALCHEMIC(self, fileout, equal=True, **kwargs):
         """Save model for ALCHEMIC."""
@@ -149,10 +151,8 @@ class idlmodel:
             arr = self.equal_grid(mindens, nr, nz, log)
         else:
             arr = self.unequal_grid(mindens, nr, nz, log)
-
-        print arr.shape
         header = 'r [au], z [au], T [K], rho [g/ccm], a [um], g2d'
-        np.savetxt(fileout, arr.T, fmt='%.5', header=header)
+        np.savetxt(fileout, arr.T, fmt='%.5f', header=header)
         print('Successfully saved to %s.' % fileout)
         return
 
