@@ -13,9 +13,11 @@ built. This will return a cube of the same shape at the provided datacube, with
 each voxel the fraction of the total integrated intensity which originates from
 there.
 
-TODO: Can we somehow estimate the line width from the data?
-Additionally we need to include some beam smear. Astropy includes a FFT
-convolution method which we could use.
+TODO:
+- Can we somehow estimate the line width from the data?
+- Should the 'zeroth' be a sum or an integral?
+- Need to include some beam smear.
+- Weighting of the near and far cones.
 '''
 
 import numpy as np
@@ -40,6 +42,7 @@ class conicalmodel:
         self.pa = kwargs.get('pa', 0.0)
         self.dist = kwargs.get('dist', 150.)
         self.mstar = kwargs.get('mstar', 1.0)
+        self.verbose = kwargs.get('verbose', True)
 
         # Read in the .fits file and determine the axes.
 
@@ -49,6 +52,7 @@ class conicalmodel:
         self.posax = self.read_posax()
         self.velax = self.read_velax()
         self.dvchan = np.diff(self.velax).mean()
+        self.bunit = getval(self.path, 'bunit', 0).lower()
 
         # Derived coordinates.
         # _sky - image coordinates.
@@ -66,9 +70,13 @@ class conicalmodel:
         # intensity profile. This consists of both an RMS estimate of the
         # background and a binning.
 
-        self.zeroth = self.get_zeroth(**kwargs)
-        self.profile = self.get_intensity_profile(**kwargs)
-
+        self.rms = self.estimate_rms(**kwargs)
+        self.nsig = kwargs.get('nsig', 3)
+        self.masked = self.mask_data(self.rms, self.nsig, **kwargs)
+        self.zeroth = self.get_zeroth(self.masked, **kwargs)
+        self.profile, self._profile = self.get_profile(self.zeroth, **kwargs)
+        self.zeroth = self.get_zeroth(self.masked, self.velax, **kwargs)
+        self.int_profile, _ = self.get_profile(self.zeroth, **kwargs)
         # Dictionaries to save pre-calculated phi models.
         # Keys are a (phi, linewidth) tuple.
 
@@ -76,33 +84,54 @@ class conicalmodel:
 
         # Read out information if verbose.
 
-        if kwargs.get('verbose', True):
+        if self.verbose:
             print('Successfully read in %s.' % self.path.split('/')[-1])
             print('Velocity axis has %d channels.' % self.velax.size)
             print('Systemic velocity is index %d.' % abs(self.velax).argmin())
-
+            print('Estimated RMS noise at %.2f %s.' % (self.rms, self.bunit))
+            print('Clipped data below %.f sigma.' % self.nsig)
         return
 
-    def get_zeroth(self, **kwargs):
-        """Return the zeroth moment of the datacube."""
-        # TODO: Include an RMS cut.
-        # TODO: Should this be trapz or just sum?
-        # return np.trapz(self.data, self.velax[:, None, None], axis=0)
-        return np.nansum(self.data, axis=0)
+    def mask_data(self, rms=None, nsig=None, **kwargs):
+        """Mask the data by some RMS value."""
+        if rms is None:
+            rms = self.rms
+        if nsig is None:
+            nsig = self.nsig
+        maskval = kwargs.get('maskval', 0.0)
+        return np.where(self.data >= nsig * rms, self.data, maskval)
 
-    def get_intensity_profile(self, **kwargs):
+    def estimate_rms(self, **kwargs):
+        """Estimate the RMS of the datacube."""
+        nchan = kwargs.get('nchan', 2)
+        linefree = np.hstack([self.data[:nchan], self.data[-nchan:]])
+        return np.nanstd(linefree)
+
+    def get_zeroth(self, data=None, velax=None, **kwargs):
+        """Return the zeroth moment of the datacube."""
+        if data is None:
+            data = self.data
+        if velax is None:
+            return np.nansum(data, axis=0)
+        return np.trapz(data, velax, axis=0)
+
+    def get_profile(self, toavg=None, **kwargs):
         """Return the radial intensity profile."""
         nbins = kwargs.get('nbins', 20)
+        if toavg is None:
+            toavg = self.data
         rpnts = np.linspace(self.r_dep.min(), self.r_dep.max(), nbins)
         ridxs = np.digitize(self.r_dep.ravel(), rpnts)
-        ipnts = [np.percentile(self.zeroth.ravel()[ridxs == r], [0.5])
+        ipnts = [np.percentile(toavg.ravel()[ridxs == r],
+                               [14., 50., 86.])
                  for r in range(1, nbins+1)]
-        ipnts = np.squeeze(ipnts)
-        return interp1d(rpnts, ipnts)
+        ipnts = np.vstack([rpnts, np.squeeze(ipnts).T])
+        interp = interp1d(rpnts, ipnts[2])
+        return ipnts, interp
 
-    def intensity(self, rpnt):
-        """Returns interpolated integrated intensity at r."""
-        return self.profile(rpnt)
+    def interpolate_profile(self, rvals):
+        """Returns an interpolated intensity value at rvals."""
+        return self._profile(rvals)
 
     def get_model(self, phi, linewidth):
         """Return a conical model."""
@@ -131,7 +160,7 @@ class conicalmodel:
     def get_channel(self, cidx, phi, linewidth):
         """Returns the model intensities."""
         ifrac = self.intensity_fraction(cidx, phi, linewidth)
-        return self.profile(self.r_dep) * ifrac
+        return self.interpolate_profile(self.r_dep) * ifrac
 
     def intensity_fraction(self, cidx, phi, linewidth):
         """Fraction of intensity at given (x, y, v) voxel."""
