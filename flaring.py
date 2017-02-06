@@ -15,16 +15,17 @@ there.
 
 TODO:
 - Can we somehow estimate the line width from the data?
-- Should the 'zeroth' be a sum or an integral?
-- Need to include some beam smear.
 - Weighting of the near and far cones.
 '''
 
 import numpy as np
 import scipy.constants as sc
+from beamclass import synthbeam
 from astropy.io import fits
 from astropy.io.fits import getval
 from scipy.interpolate import interp1d
+from astropy.convolution import convolve
+from astropy.convolution import convolve_fft
 
 
 class conicalmodel:
@@ -34,7 +35,7 @@ class conicalmodel:
     # Try and use the convention 'coord' is a single array of coordinates,
     # while 'coords' is a list of both the near and far side coordinates.
 
-    def __init__(self, path, **kwargs):
+    def __init__(self, path, beamparams=None, **kwargs):
         '''Read in the datacube.'''
 
         # Default values.
@@ -48,11 +49,15 @@ class conicalmodel:
 
         self.path = path
         self.data = fits.getdata(self.path, 0)
-        self.npix = getval(self.path, 'naxis2', 0)
-        self.posax = self.read_posax()
-        self.velax = self.read_velax()
-        self.dvchan = np.diff(self.velax).mean()
         self.bunit = getval(self.path, 'bunit', 0).lower()
+
+        self.posax = self.read_posax()
+        self.npix = getval(self.path, 'naxis2', 0)
+        self.dpix = np.diff(self.posax).mean()
+
+        self.velax = self.read_velax()
+        self.nchan = getval(self.path, 'naxis3', 0)
+        self.dvchan = np.diff(self.velax).mean()
 
         # Derived coordinates.
         # _sky - image coordinates.
@@ -68,7 +73,8 @@ class conicalmodel:
 
         # From the derived coordinates, can estimate a radial integrated
         # intensity profile. This consists of both an RMS estimate of the
-        # background and a binning.
+        # background and a binning. Note that self.profile is not the total
+        # flux.
 
         self.rms = self.estimate_rms(**kwargs)
         self.nsig = kwargs.get('nsig', 3)
@@ -77,8 +83,13 @@ class conicalmodel:
         self.profile, self._profile = self.get_profile(self.zeroth, **kwargs)
         self.zeroth = self.get_zeroth(self.masked, self.velax, **kwargs)
         self.int_profile, _ = self.get_profile(self.zeroth, **kwargs)
-        # Dictionaries to save pre-calculated phi models.
-        # Keys are a (phi, linewidth) tuple.
+
+        # Include the beamclass.
+
+        self.beam = synthbeam(self.path, beamparams, dist=self.dist, **kwargs)
+
+        # Dictionaries to save pre-calculated models.
+        # For: _phis, keys are a (phi, linewidth) tuple.
 
         self._phis = {}
 
@@ -88,9 +99,31 @@ class conicalmodel:
             print('Successfully read in %s.' % self.path.split('/')[-1])
             print('Velocity axis has %d channels.' % self.velax.size)
             print('Systemic velocity is index %d.' % abs(self.velax).argmin())
-            print('Estimated RMS noise at %.2f %s.' % (self.rms, self.bunit))
+            print('Estimated RMS noise at %.2e %s.' % (self.rms, self.bunit))
             print('Clipped data below %.f sigma.' % self.nsig)
+
         return
+
+    def channel(self, cidx, phi, linewidth, FFT=None, clip=True):
+        """Returns model channel emission."""
+        if FFT is None:
+            chan = self.get_channel(cidx, phi, linewidth)
+        else:
+            chan = self.get_channel_conv(cidx, phi, linewidth, FFT)
+        if clip:
+            chan = np.where(chan >= self.nsig * self.rms, chan, 0.0)
+        return chan
+
+    def get_channel_conv(self, cidx, phi, linewidth, FFT=True):
+        """Convolve the channel with FFT-convolution."""
+        chan = self.get_channel(cidx, phi, linewidth)
+        if self.beam.checkbeam:
+            if self.verbose:
+                print('No beam specified. Ignoring convolution.')
+            return chan
+        if FFT:
+            return convolve_fft(chan, self.beam.kernel)
+        return convolve(chan, self.beam.kernel)
 
     def mask_data(self, rms=None, nsig=None, **kwargs):
         """Mask the data by some RMS value."""
@@ -160,7 +193,8 @@ class conicalmodel:
     def get_channel(self, cidx, phi, linewidth):
         """Returns the model intensities."""
         ifrac = self.intensity_fraction(cidx, phi, linewidth)
-        return self.interpolate_profile(self.r_dep) * ifrac
+        emiss = self.interpolate_profile(self.r_dep) * ifrac
+        return np.where(emiss >= self.nsig * self.rms, emiss, 0.0)
 
     def intensity_fraction(self, cidx, phi, linewidth):
         """Fraction of intensity at given (x, y, v) voxel."""
