@@ -252,7 +252,6 @@ class limegrid:
         cumtaup = np.cumsum(self.tau(level)[::-1], axis=0)[::-1]
         contrib = cellint * np.exp(-cumtaup)
         contrib = np.where(np.isfinite(contrib), contrib, 0.0)
-        # TODO: This is currently a factor of 1e7 too high...
         return contrib
 
     def cell_contribution(self, level, pixscale=None, **kwargs):
