@@ -204,21 +204,11 @@ class limegrid:
     @property
     def thermalwidth(self):
         """Returns the local thermal width in [m/s]."""
-        if self.rates is None:
-            raise ValueError('Attach appropriate rates file.')
-        mu = self.rates.mu
-        return np.sqrt(2. * sc.k * self.gridded['gtemp'] / 2. / mu / sc.m_p)
-
-    def linewidth_nu(self, level):
-        """Returns the total linewidth (stdev) in [Hz]."""
-        if self.rates is None:
-            raise ValueError('Attach appropriate rates file.')
-        return self.linewidth * self.rates.frequencies[level] / sc.c
+        dV = 2. * sc.k * self.gridded['gtemp'] / 2. / self.rates.mu / sc.m_p
+        return np.sqrt(dV)
 
     def levelpop(self, level):
         """Number density of molecules in required level [/ccm]."""
-        if level >= self.jmax:
-            raise ValueError('Only gridded first %d levels.' % self.jmax)
         nmol = self.gridded['dens'] * self.gridded['abun'] / 1e6
         return nmol * self.gridded['levels'][level]
 
@@ -235,9 +225,8 @@ class limegrid:
 
     def jnu(self, level):
         """Emission coefficient [erg / s / ccm / Hz / sr]."""
-        j = sc.h * self.rates.freq[level] / 4. / np.pi
+        j = 6.62e-27 * self.phi(level) * self.rates.freq[level] / 4. / np.pi
         j *= self.levelpop(level+1) * self.rates.EinsteinA[level]
-        j *= self.phi(level)
         return np.where(np.isfinite(j), j, 0.0)
 
     def Snu(self, level):
@@ -250,21 +239,20 @@ class limegrid:
         return self.anu(level) * self.cellsize(self.ygrid)[:, None]
 
     def cell_intensity(self, level, pixscale=None):
-        """Intensity from each cell in [Jy/sr]."""
-        S = self.Snu(level)
-        t = self.tau(level)
-        I = S * (1. - np.exp(-t))
+        """Intensity from each cell in [Jy/sr] or [Jy/pix]."""
+        I = 1e23 * self.Snu(level) * (1. - np.exp(-self.tau(level)))
         I = np.where(np.isfinite(I), I, 0.0)
         if pixscale is None:
             return I
-        return I / self.arcsec2sr(pixscale)
+        return I * self.arcsec2sr(pixscale)
 
     def cell_emission(self, level, pixscale=None):
-        """Intensity from each cell attenuated to disk surface [Jy/sr]."""
+        """Intensity from each cell attenuated to disk surface [Jy/area]."""
         cellint = self.cell_intensity(level, pixscale)
         cumtaup = np.cumsum(self.tau(level)[::-1], axis=0)[::-1]
         contrib = cellint * np.exp(-cumtaup)
         contrib = np.where(np.isfinite(contrib), contrib, 0.0)
+        # TODO: This is currently a factor of 1e7 too high...
         return contrib
 
     def cell_contribution(self, level, pixscale=None, **kwargs):
@@ -276,17 +264,14 @@ class limegrid:
 
     def radial_intensity(self, level, pixscale=None):
         """Radial intensity profile [Jy/sr]."""
-        profile = np.nansum(self.cell_emission(level), axis=0)
-        if pixscale is None:
-            return profile
-        return profile / self.arcsec2sr(pixscale)
+        return np.nansum(self.cell_emission(level, pixscale), axis=0)
 
     def arcsec2sr(self, pixscale):
         """Convert a scale in arcseconds to a steradian."""
         return np.power(pixscale, 2.) * 2.35e-11
 
     def phi(self, level):
-        """Line fraction at line centre."""
+        """Line fraction at line centre [/Hz]."""
         dnu = self.linewidth * self.rates.freq[level] / sc.c
         return 1. / dnu / np.sqrt(2. * np.pi)
 
@@ -295,6 +280,17 @@ class limegrid:
         func = np.exp(-0.5 * np.power((x-x0) / dx, 2.))
         func /= dx * np.sqrt(2. * np.pi)
         return np.where(np.isfinite(func), func, 0.0)
+
+    def fluxweighted(self, param, level, **kwargs):
+        """Flux weighted percentiles of density."""
+        if param not in self.gridded.keys():
+            raise ValueError('Not valid parameter.')
+        f = self.cell_contribution(level)
+        p = np.array([self.wpercentiles(self.gridded[param][:, i], f[:, i])
+                      for i in xrange(self.xgrid.size)])
+        if kwargs.get('percentiles', False):
+            return p.T
+        return self.percentilestoerrors(p.T)
 
     def cellsize(self, axis, unit='cm'):
         """Returns the cell sizes."""
@@ -308,23 +304,34 @@ class limegrid:
         else:
             raise ValueError("unit must be 'au' or 'cm'.")
 
-    # All functions below here are not useful.
+    @staticmethod
+    def wpercentiles(data, weights, percentiles=[0.16, 0.5, 0.84]):
+        '''Weighted percentiles.'''
+        idx = np.argsort(data)
+        sorted_data = np.take(data, idx)
+        sorted_weights = np.take(weights, idx)
+        cum_weights = np.add.accumulate(sorted_weights)
+        scaled_weights = (cum_weights - 0.5 * sorted_weights) / cum_weights[-1]
+        spots = np.searchsorted(scaled_weights, percentiles)
+        wp = []
+        for s, p in zip(spots, percentiles):
+            if s == 0:
+                wp.append(sorted_data[s])
+            elif s == data.size:
+                wp.append(sorted_data[s-1])
+            else:
+                f1 = (scaled_weights[s] - p)
+                f1 /= (scaled_weights[s] - scaled_weights[s-1])
+                f2 = (p - scaled_weights[s-1])
+                f2 /= (scaled_weights[s] - scaled_weights[s-1])
+                wp.append(sorted_data[s-1] * f1 + sorted_data[s] * f2)
+        return np.array(wp)
 
-    def intensity(self, level, dV, pixscale=None):
-        """Return the intensity from each cell [Jy]."""
-        S = self.Snu(level, dV)
-        tau = self.tau(level, dV)
-        I = np.zeros(S.shape)
-        for i in range(1, self.ygrid.size):
-            dI = (S[i] - I[i-1]) * np.exp(-tau[i])
-            dI = S[i] * (1. - np.exp(-tau[i]))
-            I[i] = I[i-1] + np.where(np.isfinite(dI), dI, 0.0)
-        if pixscale is not None:
-            I *= self.pixarea(pixscale)
-        return np.where(np.isfinite(I), I*1e23, 0.0)
-
-    def phi_old(self, level, dV):
-        """Integrated line profile. dV in [m/s]."""
-        v = np.linspace(-0.5, 0.5, 30) * dV
-        p = self.normgauss(v[:, None, None], self.linewidth[None, :, :])
-        return np.trapz(p, v, axis=0)
+    @staticmethod
+    def percentilestoerrors(percentiles):
+        """Converts [16,50,84] percentiles to <x> +/- dx."""
+        profile = np.ones(percentiles.shape)
+        profile[0] = percentiles[1]
+        profile[1] = percentiles[1] - percentiles[0]
+        profile[2] = percentiles[2] - percentiles[1]
+        return profile

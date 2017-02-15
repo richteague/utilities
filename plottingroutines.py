@@ -107,6 +107,13 @@ def running_mean(arr, ncells=2):
     return (cum_sum[ncells:] - cum_sum[:-ncells]) / ncells
 
 
+def texify(s, underscore='\,\,'):
+    """Return a LaTeX string."""
+    s = s.replace('_', underscore)
+    ns = r'${\rm %s }$' % s
+    return ns
+
+
 '''
 Common functional forms.
 '''

@@ -169,6 +169,12 @@ class idlmodel:
         else:
             arr = self.unequal_grid(mindens, nr, nz, log)
         header = 'r [au], z [au], T [K], rho [g/ccm], a [um], g2d'
+
+        # Manually change the gas-to-dust ratio.
+        manualg2d = kwargs.get('manualg2d', False)
+        if manualg2d:
+            arr[-1] = manualg2d
+
         np.savetxt(fileout, arr.T, fmt='%.5e', header=header)
         print('Successfully saved to %s.' % fileout)
         return

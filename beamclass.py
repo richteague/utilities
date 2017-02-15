@@ -37,7 +37,8 @@ class synthbeam:
 
         if all(np.isnan([self.min, self.maj, self.pa])):
             self.checkbeam = True
-            print('No beam parameters found. Convolution impossible.')
+            if self.verbose:
+                print('No beam parameters found. Convolution impossible.')
             return
 
         # Pixel scaling. If not distance is given, assume in ["].

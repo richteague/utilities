@@ -35,7 +35,7 @@ class conicalmodel:
     # Try and use the convention 'coord' is a single array of coordinates,
     # while 'coords' is a list of both the near and far side coordinates.
 
-    def __init__(self, path, beamparams=None, **kwargs):
+    def __init__(self, path, beamparams=None, removeCont=2, **kwargs):
         '''Read in the datacube.'''
 
         # Default values.
@@ -48,7 +48,12 @@ class conicalmodel:
         # Read in the .fits file and determine the axes.
 
         self.path = path
+
         self.data = fits.getdata(self.path, 0)
+        if removeCont:
+            self.cont = np.average(self.data[:removeCont], axis=0)
+            self.data = np.array([c - self.cont for c in self.data])
+
         self.bunit = getval(self.path, 'bunit', 0).lower()
 
         self.posax = self.read_posax()
@@ -71,18 +76,22 @@ class conicalmodel:
         self.r_dep = np.hypot(self.x_dep, self.y_dep)
         self.t_dep = np.arctan2(self.y_dep, self.x_dep)
 
-        # From the derived coordinates, can estimate a radial integrated
-        # intensity profile. This consists of both an RMS estimate of the
-        # background and a binning. Note that self.profile is not the total
-        # flux.
+        # From the derived coordinates, can estimate a radial profile of the
+        # channel emission. This is done by firstly masking the data then
+        # taking the maximum value along the line of sight.
 
         self.rms = self.estimate_rms(**kwargs)
         self.nsig = kwargs.get('nsig', 3)
         self.masked = self.mask_data(self.rms, self.nsig, **kwargs)
-        self.zeroth = self.get_zeroth(self.masked, **kwargs)
-        self.profile, self._profile = self.get_profile(self.zeroth, **kwargs)
-        self.zeroth = self.get_zeroth(self.masked, self.velax, **kwargs)
-        self.int_profile, _ = self.get_profile(self.zeroth, **kwargs)
+
+        # self.flux is the flux at each (r, v) pixel.
+        # self.iflux is the integrated flux at (r).
+
+        self.velomax = self.get_maximum(self.masked)
+        self.zeroth = self.get_zeroth(self.masked, self.velax)
+        self.flux, self._flux = self.get_profile(self.velomax, **kwargs)
+        self.iflux, self._iflux = self.get_profile(self.zeroth, **kwargs)
+        self.rmin, self.rmax = self.flux[0].min(), self.flux[0].max()
 
         # Include the beamclass.
 
@@ -91,7 +100,7 @@ class conicalmodel:
         # Dictionaries to save pre-calculated models.
         # For: _phis, keys are a (phi, linewidth) tuple.
 
-        self._phis = {}
+        self._voxelflux = {}
 
         # Read out information if verbose.
 
@@ -104,19 +113,41 @@ class conicalmodel:
 
         return
 
-    def channel(self, cidx, phi, linewidth, FFT=None, clip=True):
+    def channel(self, cidx, phi, linewidth, FFT=None, clip=True, cone='both'):
         """Returns model channel emission."""
         if FFT is None:
-            chan = self.get_channel(cidx, phi, linewidth)
+            chan = self.get_channel(cidx, phi, linewidth, cone)
         else:
-            chan = self.get_channel_conv(cidx, phi, linewidth, FFT)
+            chan = self.get_channel_conv(cidx, phi, linewidth, FFT, cone)
         if clip:
             chan = np.where(chan >= self.nsig * self.rms, chan, 0.0)
         return chan
 
-    def get_channel_conv(self, cidx, phi, linewidth, FFT=True):
+    def get_channel(self, cidx, phi, linewidth, cone='tot'):
+        """Returns the model intensities."""
+        if cone not in ['pos', 'neg', 'tot']:
+            raise ValueError("cone must be 'near', 'far' or 'both'.")
+
+        ffrac = np.take(self.voxelflux(phi, linewidth), cidx, axis=1)
+        rpos, rneg = self.proj_radii(phi)
+        epos = self._flux(rpos) * ffrac[0]
+        eneg = self._flux(rneg) * ffrac[1]
+
+        epos = np.where(np.isfinite(rpos), epos, 0.0)
+        eneg = np.where(np.isfinite(rneg), eneg, 0.0)
+
+        if cone is 'pos':
+            return epos
+        if cone is 'neg':
+            return eneg
+
+        etot = np.sum([epos, eneg], axis=0)
+        emax = self._flux(self.r_dep)
+        return np.where(etot <= emax, etot, emax)
+
+    def get_channel_conv(self, cidx, phi, linewidth, FFT=True, cone='both'):
         """Convolve the channel with FFT-convolution."""
-        chan = self.get_channel(cidx, phi, linewidth)
+        chan = self.get_channel(cidx, phi, linewidth, cone)
         if self.beam.checkbeam:
             if self.verbose:
                 print('No beam specified. Ignoring convolution.')
@@ -125,80 +156,28 @@ class conicalmodel:
             return convolve_fft(chan, self.beam.kernel)
         return convolve(chan, self.beam.kernel)
 
-    def mask_data(self, rms=None, nsig=None, **kwargs):
-        """Mask the data by some RMS value."""
-        if rms is None:
-            rms = self.rms
-        if nsig is None:
-            nsig = self.nsig
-        maskval = kwargs.get('maskval', 0.0)
-        return np.where(self.data >= nsig * rms, self.data, maskval)
-
-    def estimate_rms(self, **kwargs):
-        """Estimate the RMS of the datacube."""
-        nchan = kwargs.get('nchan', 2)
-        linefree = np.hstack([self.data[:nchan], self.data[-nchan:]])
-        return np.nanstd(linefree)
-
-    def get_zeroth(self, data=None, velax=None, **kwargs):
-        """Return the zeroth moment of the datacube."""
-        if data is None:
-            data = self.data
-        if velax is None:
-            return np.nansum(data, axis=0)
-        return np.trapz(data, velax, axis=0)
-
-    def get_profile(self, toavg=None, **kwargs):
-        """Return the radial intensity profile."""
-        nbins = kwargs.get('nbins', 20)
-        if toavg is None:
-            toavg = self.data
-        rpnts = np.linspace(self.r_dep.min(), self.r_dep.max(), nbins)
-        ridxs = np.digitize(self.r_dep.ravel(), rpnts)
-        ipnts = [np.percentile(toavg.ravel()[ridxs == r],
-                               [14., 50., 86.])
-                 for r in range(1, nbins+1)]
-        ipnts = np.vstack([rpnts, np.squeeze(ipnts).T])
-        interp = interp1d(rpnts, ipnts[2])
-        return ipnts, interp
-
-    def interpolate_profile(self, rvals):
-        """Returns an interpolated intensity value at rvals."""
-        return self._profile(rvals)
-
-    def get_model(self, phi, linewidth):
-        """Return a conical model."""
+    def voxelflux(self, phi, linewidth):
+        """Return fraction of flux at given voxel (t, v, x, y)."""
         try:
-            return self._phis[phi, linewidth]
+            return self._voxelflux[phi, linewidth]
         except:
             pass
-
-        # TODO: How to better weight this part? There is a difference between
-        #       the near and front cone but currently this isn't taken into
-        #       account.
-        # TODO: Should this be at a higher sampling rate?
-        #       If yes, make it a multiple of self.dvchan. But then how would
-        #       one index this in 'intensity_fraction'?
-
         pos, neg = self.get_3Dcylin(phi)
-        vproj = [self.proj_velocity(pos), self.proj_velocity(neg)]
-        model = [normgaussian(self.velax[:, None, None],
-                              vproj[0][None, :, :], linewidth),
-                 normgaussian(self.velax[:, None, None],
-                              vproj[1][None, :, :], linewidth)]
-        model = np.amax(model, axis=0) * self.dvchan
-        self._phis[phi, linewidth] = model
-        return model
+        vel = [self.proj_velocity(pos), self.proj_velocity(neg)]
+        pos = gaussian(self.velax[:, None, None],
+                       vel[0][None, :, :], linewidth)
+        neg = gaussian(self.velax[:, None, None],
+                       vel[1][None, :, :], linewidth)
+        self._voxelflux[phi, linewidth] = [pos, neg]
+        return np.stack([pos, neg])
 
-    def get_channel(self, cidx, phi, linewidth):
-        """Returns the model intensities."""
-        ifrac = self.intensity_fraction(cidx, phi, linewidth)
-        emiss = self.interpolate_profile(self.r_dep) * ifrac
-        return np.where(emiss >= self.nsig * self.rms, emiss, 0.0)
-
-    def intensity_fraction(self, cidx, phi, linewidth):
-        """Fraction of intensity at given (x, y, v) voxel."""
-        return np.take(self.get_model(phi, linewidth), cidx, axis=0)
+    def proj_radii(self, phi):
+        """Returns the projected radii available for interpolation."""
+        coords_pos, coords_neg = self.get_3Dcylin(phi)
+        rpos, rneg = coords_pos[0], coords_neg[0]
+        rpos = np.where(rpos <= self.rmax, rpos, np.nan)
+        rneg = np.where(rneg <= self.rmax, rneg, np.nan)
+        return rpos, rneg
 
     def proj_velocity(self, coord, cylin=True):
         """Returns projected velocity pixel in [m/s]."""
@@ -248,6 +227,42 @@ class conicalmodel:
         a_pix = getval(self.path, 'crpix3', 0)
         return (np.arange(1, a_len+1) - a_pix) * a_del
 
+    def mask_data(self, rms=None, nsig=None, **kwargs):
+        """Mask the data by some RMS value."""
+        if rms is None:
+            rms = self.rms
+        if nsig is None:
+            nsig = self.nsig
+        maskval = kwargs.get('maskval', 0.0)
+        return np.where(self.data >= nsig * rms, self.data, maskval)
+
+    def estimate_rms(self, **kwargs):
+        """Estimate the RMS of the datacube."""
+        nchan = kwargs.get('nchan', 2)
+        linefree = np.hstack([self.data[:nchan], self.data[-nchan:]])
+        return np.nanstd(linefree)
+
+    def get_zeroth(self, data, velax=None):
+        """Return the zeroth moment of the datacube."""
+        if velax is None:
+            return np.sum(data, axis=0)
+        return np.trapz(data, velax, axis=0)
+
+    def get_maximum(self, data):
+        """Returns the maximum value along the velocity axis."""
+        return np.amax(data, axis=0)
+
+    def get_profile(self, toavg, **kwargs):
+        """Return the radial profile and an interpolatable function."""
+        nbins = kwargs.get('nbins', 20)
+        rpnts = np.linspace(0.0, self.r_dep.max(), nbins)
+        ridxs = np.digitize(self.r_dep.ravel(), rpnts)
+        ipnts = [np.percentile(toavg.ravel()[ridxs == r],
+                               [14., 50., 86.])
+                 for r in range(1, nbins+1)]
+        ipnts = np.vstack([rpnts, np.squeeze(ipnts).T])
+        interp = interp1d(rpnts, ipnts[2])
+        return ipnts, interp
 
 # Static methods:
 # rotate - anticlockwise rotation.
