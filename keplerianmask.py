@@ -12,7 +12,7 @@ class imagecube:
     msun = 1.989e30
     fwhm = 2. * np.sqrt(2. * np.log(2))
 
-    def __init__(self, path, dist=59.):
+    def __init__(self, path):
         """Read in a CASA produced image."""
         self.path = path
         self.data = np.squeeze(fits.getdata(path))
@@ -25,7 +25,6 @@ class imagecube:
         self.nypix = int(self.yaxis.size)
         self.dpix = np.mean([abs(np.mean(np.diff(self.xaxis))),
                              abs(np.mean(np.diff(self.yaxis)))])
-        self.dist = dist
         return
 
     def _spectralaxis(self, fn):
@@ -102,7 +101,7 @@ class imagecube:
         Returns the polar coordinates of the disk in [m] and [rad].
         """
         rsky, tsky = self._deproject(**kwargs)
-        rsky *= self.dist * sc.au
+        rsky *= kwargs.get('dist', 1.0) * sc.au
         rsky = rsky[None, :, :] * np.ones(self.data.shape)
         tsky = tsky[None, :, :] * np.ones(self.data.shape)
         return rsky, tsky
