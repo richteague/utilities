@@ -13,7 +13,9 @@ class imagecube:
     fwhm = 2. * np.sqrt(2. * np.log(2))
 
     def __init__(self, path):
-        """Read in a CASA produced image."""
+        """
+        Read in a CASA produced image.
+        """
         self.path = path
         self.data = np.squeeze(fits.getdata(path))
         self.header = fits.getheader(path)
@@ -37,9 +39,26 @@ class imagecube:
         a_ref = fits.getval(fn, 'crval3')
         return a_ref + (np.arange(a_len) - a_pix + 0.5) * a_del
 
-    def writemask(self, name=None, **kwargs):
+    def writemask(self, **kwargs):
         """
-        Write a .fits file of the mask.
+        Write a .fits file of the mask. Imporant variables are:
+
+        name:       Output name of the mask. By default it is the image name
+                    but with the '.mask' extension before '.fits'.
+        inc:        Inclination of the disk in [degrees].
+        pa:         Position angle of the disk in [degrees]. This is measured
+                    anticlockwise from north to the blue-shifted major axis.
+                    This may result in a 180 discrepancy with some literature
+                    values.
+        rout:       Outer radius of the disk in [arcsec].
+        dist:       Distance of the source in [parsec].
+        dV:         Expected line width of the source in [m/s].
+        vlsr:       Systemic velocity of the source in [km/s].
+        dx:         RA offset of source centre in [arcsec].
+        dy:         Dec offset of source centre in [arcsec].
+        nbeams:     Number of beams to convolve the mask with. Default is 1.
+        fast:       Use FFT in the convolution. Default is True.
+
         """
         mask = self._mask(**kwargs)
         kern = self._beamkernel(**kwargs)
@@ -53,8 +72,10 @@ class imagecube:
         # I'm not sure why this works but it does...
         hdu = fits.open(self.path)
         hdu[0].data = np.swapaxes(mask, 1, 2)
-        if name is None:
+        if kwargs.get('name', None) is None:
             name = self.path.replace('.fits', '.mask.fits')
+        else:
+            name = kwargs.get('name')
         hdu[0].scale('int32')
         hdu.writeto(name.replace('.fits', '') + '.fits',
                     overwrite=True, output_verify='fix')
