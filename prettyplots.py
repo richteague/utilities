@@ -15,10 +15,14 @@ def gradient_between(x, y, dy, ax=None, **kwargs):
     # Gradiated fill.
     fc = kwargs.get('gradcolor', 'dodgerblue')
     am = kwargs.get('alphamax', .7)
-    ndy = np.linspace(0., kwargs.get('maxsigma', 3), kwargs.get('nfills', 15))
+    ns = kwargs.get('nsigma', 3)
+    fn = kwargs.get('nfills', 15)
+    fy = np.linspace(0., ns, fn)
+
+    # Calculate the appropriate alpha for the layer.
     alphacum = 0.0
-    for n in ndy[::-1]:
-        alpha = gaussian(n, 1.0, am, offset=-gaussian(ndy[-1], 1.0, am))
+    for n in fy[::-1]:
+        alpha = np.mean(gaussian(n, ns / 4., am))
         alpha -= alphacum
         ax.fill_between(x, y-n*dy, y+n*dy, facecolor=fc, lw=0, alpha=alpha)
         alphacum += alpha
@@ -28,15 +32,15 @@ def gradient_between(x, y, dy, ax=None, **kwargs):
     ea = np.array([kwargs.get('edgealpha', [0.5, 0.25])]).flatten()
     es = np.array([kwargs.get('edgestyle', ':')]).flatten()
     ec = np.array([kwargs.get('edgecolor', 'k')]).flatten()
-
     for e, edge in enumerate(ed):
         ax.fill_between(x, y-edge*dy, y+edge*dy, facecolor='none',
                         alpha=ea[e % len(ea)], color=ec[e % len(ec)],
                         linestyle=es[e % len(es)])
 
-    # Mean value.
+    # Mean value including the label. Note that we do not call the legend here
+    # so extra legend kwargs can be used if necessary.
     lc = kwargs.get('linecolor', 'k')
-    ax.plot(x, y, color=lc)
+    ax.plot(x, y, color=lc, label=kwargs.get('label', None))
 
     return ax
 
