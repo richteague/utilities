@@ -22,8 +22,7 @@ def gradient_between(x, y, dy, ax=None, **kwargs):
     # Calculate the appropriate alpha for the layer.
     alphacum = 0.0
     for n in fy[::-1]:
-        alpha = np.mean(gaussian(n, ns / 4., am))
-        alpha -= alphacum
+        alpha = np.mean(gaussian(n, ns / 3., am)) - alphacum
         ax.fill_between(x, y-n*dy, y+n*dy, facecolor=fc, lw=0, alpha=alpha)
         alphacum += alpha
 
@@ -33,9 +32,10 @@ def gradient_between(x, y, dy, ax=None, **kwargs):
     es = np.array([kwargs.get('edgestyle', ':')]).flatten()
     ec = np.array([kwargs.get('edgecolor', 'k')]).flatten()
     for e, edge in enumerate(ed):
-        ax.fill_between(x, y-edge*dy, y+edge*dy, facecolor='none',
-                        alpha=ea[e % len(ea)], color=ec[e % len(ec)],
-                        linestyle=es[e % len(es)])
+        ax.plot(x, y-edge*dy, alpha=ea[e % len(ea)], color=ec[e % len(ec)],
+                linestyle=es[e % len(es)])
+        ax.plot(x, y+edge*dy, alpha=ea[e % len(ea)], color=ec[e % len(ec)],
+                linestyle=es[e % len(es)])
 
     # Mean value including the label. Note that we do not call the legend here
     # so extra legend kwargs can be used if necessary.
@@ -52,10 +52,11 @@ def gradient_fill(x, y, dy, region='below', ax=None, **kwargs):
     if region not in ['above', 'below']:
         raise ValueError("Must set 'region' to 'above' or 'below'.")
     ax = gradient_between(x, y, dy, ax=ax, **kwargs)
+    fc = kwargs.get('facecolor', ax.get_facecolor())
     if region == 'above':
-        ax.fill_between(x, y, ax.get_ylim()[1], facecolor='w', lw=0)
+        ax.fill_between(x, y, ax.get_ylim()[1], facecolor=fc, lw=0)
     else:
-        ax.fill_between(x, ax.get_ylim()[1], y, facecolor='w', lw=0)
+        ax.fill_between(x, ax.get_ylim()[1], y, facecolor=fc, lw=0)
     lc = kwargs.get('linecolor', 'k')
     ax.plot(x, y, color=lc)
     return ax
