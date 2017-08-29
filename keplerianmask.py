@@ -77,10 +77,24 @@ class imagecube:
         else:
             name = kwargs.get('name')
         hdu[0].scale('int32')
+        hdu[0].header = self._annotateheader(hdu[0].header, **kwargs)
         hdu.writeto(name.replace('.fits', '') + '.fits',
                     overwrite=True, output_verify='fix')
         if kwargs.get('return', False):
             return mask
+
+    def _annotateheader(self, hdr, **kwargs):
+        """
+        Include the model parameters in the header.
+        """
+        hdr['INC'] = kwargs['inc'], 'disk inclination [degrees].'
+        hdr['PA'] = kwargs['pa'], 'disk position angle [degrees].'
+        hdr['MSTAR'] = kwargs['mstar'], 'source mass [Msun].'
+        hdr['DV'] = kwargs['dV'], 'intrinsic linewidth [m/s].'
+        hdr['VSYS'] = kwargs['vlsr'], 'systemic velocity [km/s].'
+        hdr['DX'] = kwargs.get('dx', 0.0), 'RA offset [arcsec].'
+        hdr['DY'] = kwargs.get('dy', 0.0), 'Dec offset [arcsec].'
+        return hdr
 
     def _beamkernel(self, **kwargs):
         """

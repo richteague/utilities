@@ -1,5 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.patches import Ellipse
 
 
 def gaussian(x, dx, A=1.0, x0=0.0, offset=0.0):
@@ -54,15 +55,15 @@ def gradient_between(x, y, dy, ax=None, **kwargs):
     # from nfill fill_between calls.
 
     am = kwargs.get('alphamax', .7)
-    ns = kwargs.get('nsigma', 3)
-    fn = kwargs.get('nfills', 15)
+    ns = kwargs.get('nsigma', 1)
+    fn = kwargs.get('nfills', kwargs.get('nfill', 35))
 
     # Styles for the percentiles. Will cycle through the values if given in a
     # list. Should not complain if the lists are different lenghts.
 
     lw = kwargs.get('linewidth', 1.25)
     ms = kwargs.get('markersize', 3)
-    ed = np.array([kwargs.get('edges', [1, 3])]).flatten()
+    ed = np.array([kwargs.get('edges', [1])]).flatten()
     ea = np.array([kwargs.get('edgealpha', [0.5, 0.25])]).flatten()
     es = np.array([kwargs.get('edgestyle', ':')]).flatten()
 
@@ -90,9 +91,17 @@ def gradient_between(x, y, dy, ax=None, **kwargs):
 
     if kwargs.get('outline', True):
         ax.errorbar(x, y, color='k', fmt=kwargs.get('fmt', '-o'),
-                    ms=ms, mew=1, lw=lw*2)
+                    ms=ms, mew=1, lw=lw*2, zorder=5)
+
+    """
+        ax.errorbar(x, y, color=lc, fmt=kwargs.get('fmt', '-o'), zorder=5,
+                    ms=ms, mew=0, lw=lw, label=kwargs.get('label', None),
+                    path_effects=[pe.Stroke(linewidth=lw*2, foreground='k'),
+                    pe.Normal()])
+    """
+
     ax.errorbar(x, y, color=lc, fmt=kwargs.get('fmt', '-o'),
-                ms=ms, mew=0, lw=lw, label=kwargs.get('label', None))
+                ms=ms, mew=0, lw=lw, label=kwargs.get('label', None), zorder=5)
 
     return ax
 
@@ -101,14 +110,12 @@ def gradient_fill(x, y, dy, region='below', ax=None, **kwargs):
     """Fill above or below a line with a gradiated fill."""
     if ax is None:
         fig, ax = plt.subplots()
-    if region not in ['above', 'below']:
-        raise ValueError("Must set 'region' to 'above' or 'below'.")
-    ax = gradient_between(x, y, dy, ax=ax, **kwargs)
-    fc = kwargs.get('facecolor', ax.get_facecolor())
-    if region == 'above':
-        ax.fill_between(x, y, ax.get_ylim()[1], facecolor=fc, lw=0)
+    if region == 'below':
+        ax = gradient_between(x, y, [dy, np.zeros(x.size)], ax=ax, **kwargs)
+    elif region == 'above':
+        ax = gradient_between(x, y, [np.zeros(x.size), dy], ax=ax, **kwargs)
     else:
-        ax.fill_between(x, ax.get_ylim()[1], y, facecolor=fc, lw=0)
+        raise ValueError("Must set 'region' to 'above' or 'below'.")
     lc = kwargs.get('linecolor', 'k')
     ax.plot(x, y, color=lc)
     return ax
@@ -121,3 +128,22 @@ def running_mean(arr, ncells=2):
     cum_sum = np.insert(np.insert(arr, 0, arr[0]), -1, arr[-1])
     cum_sum = np.cumsum(cum_sum)
     return (cum_sum[ncells:] - cum_sum[:-ncells]) / ncells
+
+
+def plotbeam(bmaj, bmin=None, bpa=0.0, ax=None, **kwargs):
+    """Plot a beam. Input must be same units as axes. PA in degrees E of N."""
+    if ax is None:
+        fig, ax = plt.subplots()
+    if bmin is None:
+        bmin = bmaj
+    if bmin > bmaj:
+        temp = bmin
+        bmin = bmaj
+        bmaj = temp
+    offset = kwargs.get('offset', 0.125)
+    ax.add_patch(Ellipse(ax.transLimits.inverted().transform((offset, offset)),
+                         width=bmin, height=bmaj, angle=bpa,
+                         fill=False, hatch=kwargs.get('hatch', '////////'),
+                         lw=kwargs.get('linewidth', kwargs.get('lw', 1)),
+                         color=kwargs.get('color', kwargs.get('c', 'k'))))
+    return
