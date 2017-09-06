@@ -128,7 +128,7 @@ class imagecube:
         rsky, tsky = self._diskpolar(**kwargs)
         vkep = np.sqrt(sc.G * kwargs.get('mstar', 0.7) * self.msun / rsky)
         vkep *= np.sin(np.radians(kwargs.get('inc', 6.))) * np.cos(tsky)
-        rout = kwargs.get('rout', 4) * sc.au * self.dist
+        rout = kwargs.get('rout', 4) * sc.au * kwargs.get('dist', 1.0)
         return np.where(rsky <= rout, vkep, kwargs.get('vfill', 1e20))
 
     def _diskpolar(self, **kwargs):
