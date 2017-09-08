@@ -27,6 +27,9 @@ class imagecube:
         self.nypix = int(self.yaxis.size)
         self.dpix = np.mean([abs(np.mean(np.diff(self.xaxis))),
                              abs(np.mean(np.diff(self.yaxis)))])
+        self.bmaj = self.header['bmaj'] * 3600.
+        self.bmin = self.header['bmin'] * 3600.
+        self.bpa = self.header['bpa']
         return
 
     def _spectralaxis(self, fn):
@@ -97,23 +100,17 @@ class imagecube:
         return hdr
 
     def _beamkernel(self, **kwargs):
-        """
-        Returns the 2D Gaussian kernel.
-        """
-        bmaj = self.header['bmaj'] * 3600.
-        bmin = self.header['bmin'] * 3600.
-        bmaj /= self.dpix * self.fwhm
-        bmin /= self.dpix * self.fwhm
-        bpa = np.radians(self.header['bpa'])
+        """Returns the 2D Gaussian kernel."""
+        bmaj = self.bmaj / self.dpix / self.fwhm
+        bmin = self.bmin / self.dpix / self.fwhm
+        bpa = np.radians(self.bpa)
         if kwargs.get('nbeams', 1.0) > 1.0:
             bmin *= kwargs.get('nbeams', 1.0)
             bmaj *= kwargs.get('nbeams', 1.0)
         return Kernel(self.gaussian2D(bmin, bmaj, pa=bpa))
 
     def _mask(self, **kwargs):
-        """
-        Returns the Keplerian mask.
-        """
+        """Returns the Keplerian mask."""
         rsky, tsky = self._diskpolar(**kwargs)
         vkep = self._keplerian(**kwargs)
         vdat = self.velax - kwargs.get('vlsr', 2.89) * 1e3
@@ -122,9 +119,7 @@ class imagecube:
         return np.where(abs(vkep - vdat) <= dV, 1, 0)
 
     def _keplerian(self, **kwargs):
-        """
-        Returns the projected Keplerian velocity [m/s].
-        """
+        """Returns the projected Keplerian velocity [m/s]."""
         rsky, tsky = self._diskpolar(**kwargs)
         vkep = np.sqrt(sc.G * kwargs.get('mstar', 0.7) * self.msun / rsky)
         vkep *= np.sin(np.radians(kwargs.get('inc', 6.))) * np.cos(tsky)
@@ -132,9 +127,7 @@ class imagecube:
         return np.where(rsky <= rout, vkep, kwargs.get('vfill', 1e20))
 
     def _diskpolar(self, **kwargs):
-        """
-        Returns the polar coordinates of the disk in [m] and [rad].
-        """
+        """Returns the polar coordinates of the disk in [m] and [rad]."""
         rsky, tsky = self._deproject(**kwargs)
         rsky *= kwargs.get('dist', 1.0) * sc.au
         rsky = rsky[None, :, :] * np.ones(self.data.shape)
@@ -142,9 +135,7 @@ class imagecube:
         return rsky, tsky
 
     def _deproject(self, **kwargs):
-        """
-        Returns the deprojected pixel values, (r, theta).
-        """
+        """Returns the deprojected pixel values, (r, theta)."""
         inc, pa = kwargs.get('inc', 0.0), kwargs.get('pa', 0.0)
         dx, dy = kwargs.get('dx', 0.0), kwargs.get('dy', 0.0)
         x_sky = self.xaxis[None, :] * np.ones(self.nypix)[:, None] - dx
@@ -154,9 +145,7 @@ class imagecube:
         return np.hypot(x_dep, y_dep), np.arctan2(y_dep, x_dep)
 
     def _velocityaxis(self, fn):
-        """
-        Return velocity axis in [km/s].
-        """
+        """Return velocity axis in [km/s]."""
         a_len = fits.getval(fn, 'naxis3')
         a_del = fits.getval(fn, 'cdelt3')
         a_pix = fits.getval(fn, 'crpix3')
@@ -164,9 +153,7 @@ class imagecube:
         return (a_ref + (np.arange(a_len) - a_pix + 0.5) * a_del)
 
     def readvelocityaxis(self, fn):
-        """
-        Wrapper for _velocityaxis and _spectralaxis.
-        """
+        """Wrapper for _velocityaxis and _spectralaxis."""
         if fits.getval(fn, 'ctype3').lower() == 'freq':
             specax = self._spectralaxis(fn)
             try:
@@ -178,9 +165,7 @@ class imagecube:
             return self._velocityaxis(fn)
 
     def readpositionaxis(self, fn, a=1):
-        """
-        Returns the position axis in ["].
-        """
+        """Returns the position axis in ["]."""
         if a not in [1, 2]:
             raise ValueError("'a' must be in [0, 1].")
         a_len = fits.getval(fn, 'naxis%d' % a)
@@ -189,23 +174,17 @@ class imagecube:
         return 3600. * ((np.arange(1, a_len+1) - a_pix + 0.5) * a_del)
 
     def rotate(self, x, y, t):
-        '''
-        Rotation by angle t [rad].
-        '''
+        '''Rotation by angle t [rad].'''
         x_rot = x * np.cos(t) + y * np.sin(t)
         y_rot = y * np.cos(t) - x * np.sin(t)
         return x_rot, y_rot
 
     def incline(self, x, y, i):
-        '''
-        Incline the image by angle i [rad].
-        '''
+        '''Incline the image by angle i [rad].'''
         return x, y / np.cos(i)
 
     def gaussian2D(self, dx, dy, pa=0.0):
-        """
-        2D Gaussian kernel in pixel coordinates.
-        """
+        """2D Gaussian kernel in pixel coordinates."""
         xm = np.arange(-4*max(dy, dx), 4*max(dy, dx)+1)
         x, y = np.meshgrid(xm, xm)
         x, y = self.rotate(x, y, pa)
