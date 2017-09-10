@@ -106,10 +106,12 @@ def gradient_between(x, y, dy, ax=None, **kwargs):
     return ax
 
 
-def gradient_fill(x, y, dy, region='below', ax=None, **kwargs):
+def gradient_fill(x, y, dy=None, region='below', ax=None, **kwargs):
     """Fill above or below a line with a gradiated fill."""
     if ax is None:
         fig, ax = plt.subplots()
+    if dy is None:
+        dy = y
     if region == 'below':
         ax = gradient_between(x, y, [dy, np.zeros(x.size)], ax=ax, **kwargs)
     elif region == 'above':
