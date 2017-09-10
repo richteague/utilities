@@ -62,7 +62,7 @@ class imagecube:
         name:       Output name of the cube. By default this is the image name
                     but with the '.specdeproj' extension before '.fits'.
         """
-        vkep = self._keplerian(**kwargs)
+        vkep = self._keplerian(**kwargs)[0]
         shifted = np.zeros(self.data.shape)
         if shifted[0].shape != vkep.shape:
             raise ValueError("Mismatch in velocity and data array shapes.")
@@ -73,11 +73,12 @@ class imagecube:
                 else:
                     pix = interp1d(self.velax - vkep[j, i], self.data[:, j, i],
                                    fill_value=0.0, bounds_error=False,
-                                   assume_sorted=True)(self.velax)
+                                   assume_sorted=True)
+                    pix = pix(self.velax)
                 shifted[:, j, i] = pix
         if kwargs.get('save', True):
             self._savecube(shifted, extension='.specdeproj', **kwargs)
-        if kwargs.get('return', True):
+        if kwargs.get('return', False):
             return shifted
 
     def writemask(self, **kwargs):
@@ -144,7 +145,7 @@ class imagecube:
         name = kwargs.get('name', None)
         if kwargs.get('name', None) is None:
             name = self.path.replace('.fits', '%s.fits' % extension)
-        hdu[0].scale('int32')
+        # hdu[0].scale('int32')
         hdu.writeto(name.replace('.fits', '') + '.fits',
                     overwrite=True, output_verify='fix')
         return
