@@ -1,6 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse
+from scipy.interpolate import interp1d
 
 
 def gaussian(x, dx, A=1.0, x0=0.0, offset=0.0):
@@ -92,14 +93,6 @@ def gradient_between(x, y, dy, ax=None, **kwargs):
     if kwargs.get('outline', True):
         ax.errorbar(x, y, color='k', fmt=kwargs.get('fmt', '-o'),
                     ms=ms, mew=1, lw=lw*2, zorder=5)
-
-    """
-        ax.errorbar(x, y, color=lc, fmt=kwargs.get('fmt', '-o'), zorder=5,
-                    ms=ms, mew=0, lw=lw, label=kwargs.get('label', None),
-                    path_effects=[pe.Stroke(linewidth=lw*2, foreground='k'),
-                    pe.Normal()])
-    """
-
     ax.errorbar(x, y, color=lc, fmt=kwargs.get('fmt', '-o'),
                 ms=ms, mew=0, lw=lw, label=kwargs.get('label', None), zorder=5)
 
@@ -123,13 +116,22 @@ def gradient_fill(x, y, dy=None, region='below', ax=None, **kwargs):
     return ax
 
 
-def running_mean(arr, ncells=2):
-    """Returns the running mean of 'arr' over 'ncells' number of cells."""
-    if type(arr) != np.ndarray:
-        arr = np.array(arr)
-    cum_sum = np.insert(np.insert(arr, 0, arr[0]), -1, arr[-1])
-    cum_sum = np.cumsum(cum_sum)
-    return (cum_sum[ncells:] - cum_sum[:-ncells]) / ncells
+def powerlaw(x, x0, q, xc=1.0, dx0=0.0, dq=0.0):
+    """Powerlaw including errors."""
+    y = x0 * np.power(x / xc, q)
+    if dx0 > 0.0 or dq > 0.0:
+        dy = y * np.hypot(dx0 / x, dq * (np.log(x) - np.log(xc)))
+        return y, dy
+    return y
+
+
+def running_mean(x, y, ncells=2):
+    """Returns the running mean over 'ncells' number of cells."""
+    yy = np.cumsum(np.insert(np.insert(y, 0, y[0]), -1, y[-1]))
+    yy = (yy[ncells:] - yy[:-ncells]) / ncells
+    xx = np.cumsum(np.insert(np.insert(x, 0, x[0]), -1, x[-1]))
+    xx = (xx[ncells:] - xx[:-ncells]) / ncells
+    return interp1d(xx, yy, bounds_error=False, fill_value=np.nan)(x)
 
 
 def plotbeam(bmaj, bmin=None, bpa=0.0, ax=None, **kwargs):

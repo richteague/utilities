@@ -29,6 +29,7 @@ class imagecube:
         self.header = fits.getheader(path)
         self.velax = self._readvelocityaxis(path)
         self.chan = np.mean(np.diff(self.velax))
+        self.nu = self._readrestfreq()
         self.xaxis = self._readpositionaxis(path, 1)
         self.yaxis = self._readpositionaxis(path, 2)
         self.nxpix = int(self.xaxis.size)
@@ -39,14 +40,53 @@ class imagecube:
         self.bpa = self.header['bpa']
         return
 
-    def deprojectspectra(self, **kwargs):
+    def azimithallyaverage(self, data=None, rpnts=None, **kwargs):
+        """
+        Azimuthally average a cube. Variables are:
+
+        data:       Data to deproject, by default is the attached cube.
+        rpnts:      Points to average at in [arcsec]. If none are given, assume
+                    beam spaced points across the radius of the image.
+        deproject:  If the cube first be deprojected before averaging [bool].
+                    By default this is true. If so, the fields required by
+                    self.deprojectspectra are necessary.
+        """
+
+        # Choose the data to azimuthally average.
+        if data is None:
+            data = self.data
+        else:
+            if data.shape != self.data.shape:
+                raise ValueError("Unknown data shape.")
+
+        # Define the points to sample the radial profile at.
+        if rpnts is None:
+            rbins = np.arange(0., self.xaxis.max(), self.bmaj)
+        else:
+            dr = np.diff(rpnts)[0] * 0.5
+            rbins = np.linspace(rpnts[0] - dr, rpnts[-1] + dr, len(rpnts) + 1)
+        nbin = rbins.size
+
+        # Apply the deprojection if required.
+        if kwargs.get('deproject', True):
+            data = self.deprojectspectra(data=data, save=False, **kwargs)
+
+        # Apply the averaging.
+        rvals, _ = self._deproject(**kwargs)
+        ridxs = np.digitize(rvals.ravel(), rbins)
+        data = data.reshape((data.shape[0], -1)).T
+        avg = [np.nanmean(data[ridxs == r], axis=0) for r in range(1, nbin)]
+        return np.squeeze(avg)
+
+    def deprojectspectra(self, data=None, **kwargs):
         """
         Write a .fits file with the spectrally deprojected spectra. Required
         variables are:
 
+        data:       Data to deproject, by default is the attached cube.
         dx:         RA offset of source centre in [arcsec].
         dy:         Dec offset of source centre in [arcsec].
-        inc:        Inclination of the disk in [degrees].
+        inc:        Inclination of the disk in [degrees]. Must be positive.
         pa:         Position angle of the disk in [degrees]. This is measured
                     anticlockwise from north to the blue-shifted major axis.
                     This may result in a 180 discrepancy with some literature
@@ -55,15 +95,20 @@ class imagecube:
                     all pixels will be deprojected. If a value is given, then
                     only pixels within that radius will be shifted, all others
                     will be masked and returned as zero.
+        mstar:      Stellar mass in [Msun].
         dist:       Distance of the source in [parsec].
-        vlsr:       Systemic velocity of the source in [km/s].
         save:       Save the shifted cube or not [bool].
         return:     Return the shifted data or not [bool].
         name:       Output name of the cube. By default this is the image name
                     but with the '.specdeproj' extension before '.fits'.
         """
+        if data is None:
+            data = self.data
+        else:
+            if data.shape != self.data.shape:
+                raise ValueError("Unknown data shape.")
         vkep = self._keplerian(**kwargs)[0]
-        shifted = np.zeros(self.data.shape)
+        shifted = np.zeros(data.shape)
         if shifted[0].shape != vkep.shape:
             raise ValueError("Mismatch in velocity and data array shapes.")
         for i in range(shifted.shape[2]):
@@ -71,14 +116,14 @@ class imagecube:
                 if vkep[j, i] > 1e10:
                     pix = np.zeros(self.velax.size)
                 else:
-                    pix = interp1d(self.velax - vkep[j, i], self.data[:, j, i],
+                    pix = interp1d(self.velax - vkep[j, i], data[:, j, i],
                                    fill_value=0.0, bounds_error=False,
                                    assume_sorted=True)
                     pix = pix(self.velax)
                 shifted[:, j, i] = pix
         if kwargs.get('save', True):
             self._savecube(shifted, extension='.specdeproj', **kwargs)
-        if kwargs.get('return', False):
+        else:
             return shifted
 
     def writemask(self, **kwargs):
@@ -87,7 +132,7 @@ class imagecube:
 
         name:       Output name of the mask. By default it is the image name
                     but with the '.mask' extension before '.fits'.
-        inc:        Inclination of the disk in [degrees].
+        inc:        Inclination of the disk in [degrees]. Must be positive.
         pa:         Position angle of the disk in [degrees]. This is measured
                     anticlockwise from north to the blue-shifted major axis.
                     This may result in a 180 discrepancy with some literature
@@ -100,7 +145,6 @@ class imagecube:
         dy:         Dec offset of source centre in [arcsec].
         nbeams:     Number of beams to convolve the mask with. Default is 1.
         fast:       Use FFT in the convolution. Default is True.
-
         """
         mask = self._mask(**kwargs)
         kern = self._beamkernel(**kwargs)
@@ -124,6 +168,21 @@ class imagecube:
                     overwrite=True, output_verify='fix')
         if kwargs.get('return', False):
             return mask
+
+    def _readrestfreq(self):
+        """Read the rest frequency."""
+        try:
+            nu = self.header['restfreq']
+        except KeyError:
+            nu = self.header['restfrq']
+        return nu
+
+    @property
+    def Tb(self):
+        """Calculate the Jy/beam to K conversion."""
+        omega = np.pi * np.radians(self.header['bmin'])
+        omega *= np.radians(self.header['bmaj']) / 4. / np.log(2.)
+        return 1e-26 * sc.c**2 / self.nu**2 / 2. / sc.k / omega
 
     def _pixelscale(self):
         """Returns the average pixel scale of the image."""
@@ -186,10 +245,13 @@ class imagecube:
         vkep = np.sqrt(sc.G * kwargs.get('mstar', 0.7) * self.msun / rsky)
         vkep *= np.sin(np.radians(kwargs.get('inc', 6.))) * np.cos(tsky)
         rout = kwargs.get('rout', 4) * sc.au * kwargs.get('dist', 1.0)
-        return np.where(rsky <= rout, vkep, kwargs.get('vfill', 1e20))
+        vkep = np.where(rsky <= rout, vkep, kwargs.get('vfill', 1e20))
+        if kwargs.get('image', False):
+            return vkep[0]
+        return vkep
 
     def _diskpolar(self, **kwargs):
-        """Returns the polar coordinates of the disk in [m] and [rad]."""
+        """Returns the polar coordinates of the sky in [m] and [rad]."""
         rsky, tsky = self._deproject(**kwargs)
         rsky *= kwargs.get('dist', 1.0) * sc.au
         rsky = rsky[None, :, :] * np.ones(self.data.shape)
